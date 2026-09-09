@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+import traceback
 
 from app.rag.hybrid_search import HybridRetriever
-from app.rag.reranker import Reranker
 from app.rag.generator import Generator
 
 
@@ -11,10 +11,6 @@ router = APIRouter(
     tags=["Chat"]
 )
 
-
-# ---------------------------------------------------------
-# REQUEST / RESPONSE SCHEMAS
-# ---------------------------------------------------------
 
 class ChatRequest(BaseModel):
     query: str = Field(
@@ -35,17 +31,11 @@ class ChatResponse(BaseModel):
     sources: list[Source]
 
 
-# ---------------------------------------------------------
-# CHAT ENDPOINT
-# ---------------------------------------------------------
-
 @router.post("", response_model=ChatResponse)
 def chat(request: ChatRequest):
 
-    # Clean the user's question
     query = request.query.strip()
 
-    # Validate empty query
     if not query:
         raise HTTPException(
             status_code=400,
@@ -53,29 +43,26 @@ def chat(request: ChatRequest):
         )
 
     try:
+        print(f"CHAT REQUEST: {query}")
 
-        # -------------------------------------------------
-        # 1. INITIALIZE RAG COMPONENTS
-        # -------------------------------------------------
-
+        # Initialize retriever and generator
+        print("Initializing HybridRetriever...")
         hybrid_retriever = HybridRetriever()
-        reranker = Reranker()
+
+        print("Initializing Generator...")
         generator = Generator()
 
-        # -------------------------------------------------
-        # 2. HYBRID RETRIEVAL
-        # -------------------------------------------------
-
+        # Retrieve relevant documents
+        print("Running hybrid retrieval...")
         hybrid_results = hybrid_retriever.retrieve(
             query=query,
-            top_k=5,
+            top_k=3,
             candidate_k=5
         )
 
-        # -------------------------------------------------
-        # 3. HANDLE NO RETRIEVED DOCUMENTS
-        # -------------------------------------------------
+        print(f"Retrieved {len(hybrid_results)} documents")
 
+        # No relevant documents
         if not hybrid_results:
             return ChatResponse(
                 answer=(
@@ -87,58 +74,41 @@ def chat(request: ChatRequest):
                 sources=[]
             )
 
-        # -------------------------------------------------
-        # 4. RERANK RETRIEVED DOCUMENTS
-        # -------------------------------------------------
-
-        final_documents = reranker.rerank(
-            query=query,
-            documents=hybrid_results,
-            top_k=3
-        )
-
-        # -------------------------------------------------
-        # 5. GENERATE GROUNDED ANSWER
-        # -------------------------------------------------
-
+        # Generate answer
+        print("Generating answer with Groq...")
         answer = generator.generate(
             query=query,
-            documents=final_documents
+            documents=hybrid_results
         )
 
-        # -------------------------------------------------
-        # 6. BUILD STRUCTURED SOURCES
-        # -------------------------------------------------
+        print("Answer generated successfully")
 
+        # Build sources
         sources = []
 
-        for document in final_documents:
+        for document in hybrid_results:
 
             metadata = document.get(
                 "metadata",
                 {}
             )
 
-            source = Source(
-                file=metadata.get(
-                    "source",
-                    "Unknown document"
-                ),
-                page=metadata.get(
-                    "page",
-                    "Unknown"
-                ),
-                chunk=metadata.get(
-                    "chunk_index",
-                    "Unknown"
+            sources.append(
+                Source(
+                    file=metadata.get(
+                        "source",
+                        "Unknown document"
+                    ),
+                    page=metadata.get(
+                        "page",
+                        "Unknown"
+                    ),
+                    chunk=metadata.get(
+                        "chunk_index",
+                        "Unknown"
+                    )
                 )
             )
-
-            sources.append(source)
-
-        # -------------------------------------------------
-        # 7. RETURN ANSWER + SOURCES
-        # -------------------------------------------------
 
         return ChatResponse(
             answer=answer,
@@ -147,11 +117,13 @@ def chat(request: ChatRequest):
 
     except Exception as error:
 
-        print(
-            f"Chat request failed: {error}"
-        )
+        print("====================================")
+        print("CHAT REQUEST FAILED")
+        print(f"ERROR: {error}")
+        traceback.print_exc()
+        print("====================================")
 
         raise HTTPException(
             status_code=500,
-            detail="Failed to process the support request."
+            detail=str(error)
         )
